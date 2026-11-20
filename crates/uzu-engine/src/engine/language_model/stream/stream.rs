@@ -317,6 +317,7 @@ impl<'a, B: Backend> StreamEnqueuer<'a, B> {
             let batch_dim = BatchTopology::flat(input_chunk.len() as u32);
 
             if self.model.decoder.has_ngram_embeddings() {
+                // TODO(perf): we could hash and fetch all of the prefill rows at once instead of per-batch.
                 self.model
                     .decoder
                     .prepare_ngram_rows(&mut self.model_state.transformer_state, &input_chunk_u32, None)
