@@ -308,6 +308,7 @@ impl<'a, B: Backend> StreamEnqueuer<'a, B> {
         let hidden_feature_layer_indices =
             self.model.speculator.as_ref().map(|speculator| speculator.hidden_feature_layer_indices());
 
+        let mut pendings = Vec::with_capacity(number_of_batches);
         let mut encode_batch = |input_chunk: &[u64], sample: bool| -> Result<_, LanguageModelStreamError<B>> {
             let input_chunk_u32 = input_chunk.iter().map(|token_id| *token_id as u32).collect::<Box<[u32]>>();
             let token_ids = command_buffer
@@ -317,7 +318,9 @@ impl<'a, B: Backend> StreamEnqueuer<'a, B> {
             let batch_dim = BatchTopology::flat(input_chunk.len() as u32);
 
             if self.model.decoder.has_ngram_embeddings() {
-                // TODO(perf): we could hash and fetch all of the prefill rows at once instead of per-batch.
+                // Prevous worked overlapped here.
+                // TODO(perf): we could also overlap the encoding if we do the thing of filling the
+                // buffer after encoding and dispatching an event
                 self.model
                     .decoder
                     .prepare_ngram_rows(&mut self.model_state.transformer_state, &input_chunk_u32, None)
@@ -362,7 +365,23 @@ impl<'a, B: Backend> StreamEnqueuer<'a, B> {
 
             self.model_state.tokens.extend(input_chunk);
 
-            Ok((decoder_output, token_ids, batch_dim))
+            if sample {
+                return Ok(Some((decoder_output, token_ids, batch_dim)));
+            }
+
+            drop(token_ids);
+
+            // just `Self::start_recording("prefill")` which can't be called because we borrow `self` mutably (please view types when)
+            let next = self
+                .model
+                .engine
+                .context
+                .create_command_buffer(Some("prefill"), Some(self.allocation_pool.clone()))
+                .map_err(LanguageModelStreamError::Backend)?;
+            let next = record(next, self.options.timestamps.as_ref());
+            let encoded = mem::replace(&mut command_buffer, next);
+            pendings.push(encoded.end_encoding().submit());
+            Ok(None)
         };
 
         let mut token_chunks = input.chunks(max_batch_size);
@@ -380,7 +399,8 @@ impl<'a, B: Backend> StreamEnqueuer<'a, B> {
             encode_batch(end, true)?
         } else {
             encode_batch(final_chunk, true)?
-        };
+        }
+        .unwrap();
 
         let logits = decoder_output.logits.unwrap();
 
@@ -449,6 +469,8 @@ impl<'a, B: Backend> StreamEnqueuer<'a, B> {
         self.metrics.num_tokens_prefilled += input.len();
         self.metrics.num_tokens_proposed += 1;
 
+        pendings.push(command_buffer.end_encoding().submit());
+
         Ok(GenerationJob::Pending {
             output_norm,
             output_tokens: output_token,
@@ -457,7 +479,7 @@ impl<'a, B: Backend> StreamEnqueuer<'a, B> {
             trie_cpu: None,
             hidden_features: decoder_output.hidden_features,
             capture_span: None,
-            pendings: Box::new([command_buffer.end_encoding().submit()]),
+            pendings: pendings.into_boxed_slice(),
         })
     }
 
