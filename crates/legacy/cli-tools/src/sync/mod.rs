@@ -9,12 +9,13 @@ mod pi_extension;
 mod playground;
 mod pyproject;
 mod readme;
+mod replace;
 mod swift_package;
 mod toolchains;
 mod typescript_version;
 mod wasm_tool;
 
-use anyhow::{Ok, Result, anyhow};
+use anyhow::{Context, Ok, Result, anyhow};
 pub use jsr::JsrSyncTask;
 pub use license::LicenseSyncTask;
 pub use mirai_gui::MiraiGuiSyncTask;
@@ -44,14 +45,20 @@ pub trait SyncTask {
         input_path: &Path,
         check: bool,
     ) -> Result<()> {
-        let input = std::fs::read_to_string(input_path).unwrap_or_default();
-        let output = self.process(platforms, workspace, &input)?;
+        // A missing file is generated whole; any other read error stops the sync.
+        let input = match std::fs::read_to_string(input_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            input => input.with_context(|| format!("Failed to read {}", input_path.display()))?,
+        };
+        let output = self
+            .process(platforms, workspace, &input)
+            .with_context(|| format!("Failed to sync {}", input_path.display()))?;
         if check {
             if input != output {
                 return Err(anyhow!("The file is out of sync: {}", input_path.display()));
             }
         } else {
-            std::fs::write(input_path, output)?;
+            std::fs::write(input_path, output).with_context(|| format!("Failed to write {}", input_path.display()))?;
         }
         Ok(())
     }

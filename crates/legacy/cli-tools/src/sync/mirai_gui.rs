@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
-use regex::Regex;
 
 use crate::{
     configs::{PlatformsConfig, WorkspaceManifest},
-    sync::SyncTask,
+    sync::{SyncTask, replace::replace_json_string},
 };
 
 pub enum MiraiGuiSyncTask {
@@ -18,26 +17,15 @@ impl SyncTask for MiraiGuiSyncTask {
         workspace: &WorkspaceManifest,
         input: &str,
     ) -> Result<String> {
-        let version = &workspace.workspace.package.version;
         match self {
-            Self::PackageJson => replace_string_field(input, "version", version),
+            Self::PackageJson => replace_json_string(input, "version", &workspace.workspace.package.version),
             Self::TauriConf => {
                 let target = platforms
                     .envs
                     .get("MACOSX_DEPLOYMENT_TARGET")
                     .context("Missing MACOSX_DEPLOYMENT_TARGET in platforms.toml [envs]")?;
-                replace_string_field(input, "minimumSystemVersion", target)
+                replace_json_string(input, "minimumSystemVersion", target)
             },
         }
     }
-}
-
-fn replace_string_field(
-    input: &str,
-    key: &str,
-    value: &str,
-) -> Result<String> {
-    let regex = Regex::new(&format!(r#"("{key}"\s*:\s*)"[^"]*""#))?;
-    let literal = serde_json::to_string(value)?;
-    Ok(regex.replace(input, format!("$1{literal}").as_str()).into_owned())
 }

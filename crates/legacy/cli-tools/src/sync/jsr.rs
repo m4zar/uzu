@@ -1,9 +1,8 @@
 use anyhow::Result;
-use regex::Regex;
 
 use crate::{
     configs::{PlatformsConfig, WorkspaceManifest},
-    sync::SyncTask,
+    sync::{SyncTask, replace::replace_json_string},
 };
 
 pub struct JsrSyncTask;
@@ -15,10 +14,6 @@ impl SyncTask for JsrSyncTask {
         workspace: &WorkspaceManifest,
         input: &str,
     ) -> Result<String> {
-        let package = &workspace.workspace.package;
-        let regex = Regex::new(r#"("version"\s*:\s*)"[^"]*""#)?;
-        let literal = serde_json::to_string(&package.version)?;
-        let replacement = format!("$1{literal}");
-        Ok(regex.replace(input, replacement.as_str()).into_owned())
+        replace_json_string(input, "version", &workspace.workspace.package.version)
     }
 }
